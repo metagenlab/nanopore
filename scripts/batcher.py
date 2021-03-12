@@ -1,19 +1,20 @@
 #!/usr/bin/env python
 
 import sys
+import time
 import subprocess
 from threading import Thread
 import shutil
 import os
 import logging
-from argparse import ArgumentParser
+from argparse import ArgumentParser, SUPPRESS
 
 class batcher:
     """
     Batcher class to watch a directory for fast5 files and regroup them in batches for basecalling
     parts copied from https://gitlab.com/ModernisingMedicalMicrobiology/CRuMPIT
     """
-    def __init__(self,path,outfol,batchsize=1000,batches=0,fileType='fast5'):
+    def __init__(self,path,outfol,batchsize=8000,batches=0,fileType='fast5',timeout=2):
         self.job_queue=[]
         self.fileType=fileType
         self.batchsize=int(batchsize)
@@ -22,8 +23,7 @@ class batcher:
         self.outpath=outfol
         self.stop=False
         self.previousf5s=set()
-        self.runNums={}
-        self.reruns=0
+        self.timeout=timeout
         logging.basicConfig(level=logging.DEBUG, filename='batcher.log')
 
 
@@ -81,7 +81,10 @@ class batcher:
             self.run_batch(self.job_queue)
 
     def keepWatch(self):
-        while self.stop is False:
+        timeout=self.timeout
+        timeout_start=time.time()
+        while time.time() < timeout_start + timeout:
+            time.sleep(0.25)
             newF5s=self.getFiles(self.path)
             newF5s=set(newF5s)-set(self.f5s)
             for f in newF5s:
@@ -92,22 +95,18 @@ class batcher:
                 else:
                     self.job_queue.append(f)
                     self.f5s.append(f)
+            
     
     def runWatch(self):
         rcv=Thread(target=self.keepWatch)
         rcv.start()
-    
-    def stopWatch(self):
-        self.stop=True
+        rcv.join()
+        
 
 def batchRun(opts):
-    bt=batcher(opts.path, opts.out, opts.batchsize, opts.batches, opts.filetype)
+    bt=batcher(opts.path, opts.out, opts.batchsize, opts.batches, opts.filetype, opts.timeout)
     bt.run()
-    if opts.watch==True:
-        try:
-            bt.runWatch()
-        except KeyboardInterrupt:
-            bt.stopWatch()
+    bt.runWatch()
 
 def batchGetArgs(parser):
     parser.add_argument('-p', '--path', required=True,
@@ -116,12 +115,11 @@ def batchGetArgs(parser):
                                  help='output path for batch files')
     parser.add_argument('-f', '--filetype', required=False,
                                  help='file type (fast5 or fastq) to batch', default='fast5', type=str)
-    parser.add_argument('-bs', '--batchsize', required=False,default=1000,type=int,
+    parser.add_argument('-bs', '--batchsize', required=False, default=8000, type=int,
                                  help='batch size for basecalling (number of fast5 or fastq files)')
-    parser.add_argument('-bn', '--batches', required=False,default=0,type=int,
+    parser.add_argument('-bn', '--batches', required=False, default=0, type=int,
                                  help='number of previous batch files if restarting')
-    parser.add_argument('-w', '--watch', required=False,action='store_true',
-                                 help='Option to watch output')
+    parser.add_argument('-t',   '--timeout', required=False, help='time in seconds, for watching the dir',default=2)
     return parser
 
 if __name__ == "__main__":
