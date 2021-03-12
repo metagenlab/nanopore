@@ -2,19 +2,33 @@
 
 def helpMessage() {
     log.info"""
-    ================================================================
-    nanopore-nf
-    ================================================================
-    DESCRIPTION
     Usage:
-    nextflow run metagenlab/nanopore
-    Options:
-        --fast5       	    Input directory of fastq or fast5 files.
-        --fastq             Input directory of fastq or fastq files.
-        --outdir        	  Output directory for pipeline analysis results.
+    nextflow run metagenlab/nanopore [Profiles] [Options]
+    
     Profiles:
         local               local execution
-        slurm               SLURM execution with both singularity and Docker
+        slurm               SLURM execution with either Singularity or Docker
+    
+    Options:
+        --outdir        	  Output directory for pipeline analysis results
+        --input             Input directory of files to process
+
+    ================================================================
+    File batching
+    ================================================================
+    Options:
+        --ftype       	    file type [fastq,fast5] (default=fast5)
+        --watch             Set to true to watch a directory for files
+        --batch             Number of files to process in batch (default=5000)
+        --wait              Time in seconds to wait for fast5/q files (default=1)
+    ================================================================
+    Basecalling
+    ================================================================
+    Options:
+        --basecall       	  Use guppy cpu/gpu basecalling (default=cpu)
+        --model             Basecalling model for guppy (default=dna_r9.4.1_450bps_hac.cfg)
+        --runid             fastq.gz name after basecalling            
+
     Author:
     Farid Chaabane (faridchaabn@gmail.com)
     """.stripIndent()
@@ -29,43 +43,74 @@ if (params.help) {
 
 project_dir = projectDir
 
-process fast5_batching {
-  input: path f5path from params.fast5
+/*
+================================================================
+    File batching
+================================================================
+*/
+
+params.ftype='fast5'
+params.watch=false
+params.batch=5000
+params.wait=1
+fileName='done.fast5'
+
+if (params.watch){
+  process stop_watch { // porcess that creates a text file within a time limit. 
+                      // The text file presence stops nextflow's watch for new files
+    script:
+    """
+    sleep $params.wait
+    echo "spent $params.wait seconds watching $params.ftype dir" > $params.input/$fileName
+    """
+    }
   
-  output: file '*.batch' into batches_channel
-  
-  script:
-  """
-  $project_dir/scripts/batcher.py -p $f5path -o . -f fast5 -w True  
-  """
+  Channel.watchPath("$params.input/*.$params.ftype").until{file->file.name == fileName}.set{files_ch}
 }
 
+else{
+  files_ch = Channel.fromPath("$params.input/*.$params.ftype")
+  }
+
 /*
-fastqpath=Channel.fromPath(params.fastq)
-process fastq_batching {
-  input: fastqpath
-  
-  output:
-  
-  script:
-  """
-  
-  """
-}
+================================================================
+    Basecalling
+================================================================
+*/
+
+params.model='dna_r9.4.1_450bps_hac.cfg'
+params.basecall=false
+params.runid='runid_0'
 
 process guppy_basecalling  {
   container 'genomicpariscentre/guppy:4.4.2'
   
-  input: file batch from batches_channel
+  cpus = 2
+
+  input: file fast5List from files_ch.buffer(size: params.batch, remainder: true)
   
-  output: fastq
+  output: file '*.fastq.gz' into basecalled_fastq_ch
+          file '*.txt' into basecall_summary_ch
   
+  when: params.basecall
+
   script:
-  """
-  
-  """
+  if (params.basecall == 'cpu')
+    """
+    guppy_basecaller -i . --save_path . \
+    --config $params.model --cpu_threads_per_caller ${task.cpus} \
+    --num_callers 1 --compress_fastq
+    """
+  else if (params.basecall == 'gpu')
+    """
+    guppy_basecaller -i . --save_path . \
+    --config $params.model --num_callers 1 -x "cuda:0" --compress_fastq 
+    """
 }
-*/
+
+basecall_summary_ch.collectFile(name: "summary.txt", keepHeader:true, skip:1, storeDir:"$params.outdir/basecall")
+basecalled_fastq_ch.collectFile(name: "$params.runid\.fastq.gz", storeDir:"$params.outdir/basecall")
+
 
 workflow.onComplete {
 	  RED='\033[0;31m'
