@@ -106,8 +106,6 @@ params.trim=false
 
 process guppy_basecalling  {
   container 'genomicpariscentre/guppy:4.4.2'
-  
-  cpus = 9
 
   input: file fast5List from fast5_ch.buffer(size: params.batch, remainder: true)
   
@@ -197,8 +195,6 @@ params.tax=false
 params.meta=false
 process centrifuge_fastqs {
   container 'quay.io/biocontainers/centrifuge:1.0.4_beta--he513fc3_5'
-
-  cpus = 10
 
   input: file fastqs from fastq_tax_ch
   
