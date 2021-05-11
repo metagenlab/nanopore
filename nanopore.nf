@@ -27,7 +27,7 @@ def helpMessage() {
     ========================================================================================
     Options:
         --basecall       	  Use guppy cpu/gpu basecalling (default=cpu)
-        --model             Basecalling model for guppy (default=dna_r9.4.1_450bps_hac.cfg)
+        --model             Basecalling model for guppy (default=dna_r9.4.1_450bps_fast.cfg)
         --runid             fastq.gz name after basecalling
 
     ========================================================================================
@@ -41,7 +41,6 @@ def helpMessage() {
     ========================================================================================
     Options:
         --tax       	  Taxonomic classifier of choice (default=centrifuge) 
-        --
 
     Author:
     Farid Chaabane (faridchaabn@gmail.com)
@@ -99,7 +98,7 @@ echo "spent $params.wait seconds watching fast5 dir" > $params.input/$fileName
 ================================================================
 */
 
-params.model='dna_r9.4.1_450bps_hac.cfg'
+params.model='dna_r9.4.1_450bps_fast.cfg'
 params.basecall=false
 params.runid='runid_0'
 params.trim=false
@@ -107,10 +106,11 @@ params.trim=false
 process guppy_basecalling  {
   container 'genomicpariscentre/guppy:4.4.2'
 
+  cpus 10
+
   input: file fast5List from fast5_ch.buffer(size: params.batch, remainder: true)
   
-  when: 
-  params.basecall
+  when: params.basecall
   
   output: file '*.fastq' into basecalled_fastq_ch, collect_fastq_ch
           file '*.txt' into basecall_summary_ch
@@ -163,7 +163,7 @@ if (params.basecall) {
   summaries_ch=Channel.fromPath("$params.outdir/basecall/*summary.txt")
 }
 else{
-  summaries_ch=Channel.fromPath("$params.input/*summary.txt")
+  summaries_ch=Channel.fromPath("$params.input")
 }
 process pyco_quality_control {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
@@ -192,10 +192,14 @@ all_fastqs_ch=basecalled_fastq_ch.mix(fastq_ch)
 all_fastqs_ch.into{fastq_tax_ch; fastq_assembly_ch}
 
 params.tax=false
+
 params.meta=false
+
 process centrifuge_fastqs {
   container 'quay.io/biocontainers/centrifuge:1.0.4_beta--he513fc3_5'
 
+  cpus 20
+  
   input: file fastqs from fastq_tax_ch
   
   when: params.tax == 'centrifuge'
@@ -221,9 +225,9 @@ params.assembly=false
 process assembly_with_flye {
   container 'quay.io/biocontainers/flye:2.8.3--py27h6a42192_1'
   
-  publishDir "$params.outdir/assembly", mode: 'symlink', pattern: "*"
+  cpus 20
   
-  cpus = 10
+  publishDir "$params.outdir/assembly", mode: 'symlink', pattern: "*"
 
   input: file fastqs from fastq_assembly_ch
   
@@ -244,7 +248,58 @@ process assembly_with_flye {
     """
 }
 
+/*
+================================================================
+    Map to reference genome
+================================================================
+*/
 
+params.reference=false
+
+process minimap2_assembly_to_reference {
+  container 'quay.io/biocontainers/minimap2:2.18--h5bf99c6_0'
+  
+  cpus 20
+  
+  input: file fasta from fasta_ch
+  
+  output: file "*.sam" into sam_ch
+  
+  script:
+  """
+  minimap2 -ax asm5 $params.reference $fasta > ${params.runid}.sam
+  """
+}
+
+process sam_to_sorted_bam {
+  container 'quay.io/biocontainers/samtools:0.1.19--h270b39a_9'
+  
+  cpus 10
+
+  input: file sam from sam_ch
+  
+  output: file "*.bam" into bam_ch
+  
+  script:
+  """
+  samtools sort -o ${params.runid}.bam -@ ${task.cpus} $sam
+  """
+}
+
+process bam_to_cov {
+  container 'quay.io/biocontainers/bioconvert'
+  
+  cpus 10
+
+  input: file bam from bam_ch
+  
+  output: file "*.cov" into cov_ch
+  
+  script:
+  """
+  bioconvert bam2cov $bam 
+  """
+}
 workflow.onComplete {
 	  RED='\033[0;31m'
     GREEN='\033[0;32m'
