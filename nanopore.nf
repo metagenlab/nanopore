@@ -54,9 +54,13 @@ def helpMessage() {
     Options:
         --map          mapper of choice (default=minimap2)
         --reference    path to reference genome (default=$params.input/*.fna)
-
-
-
+    
+    ========================================================================================
+    Resistance gene identifier
+    ========================================================================================
+    Options:
+        --res       resistance gene tool (default=rgi)
+        --card      path to CARD database
     Author:
     Farid Chaabane (faridchaabn@gmail.com)
     """.stripIndent()
@@ -115,6 +119,9 @@ params.model='dna_r9.4.1_450bps_fast.cfg'
 params.basecall=false
 params.runid='runid_0'
 params.trim=false
+params.pass=true
+
+
 
 process guppy_basecalling  {
   container 'genomicpariscentre/guppy:4.5.3'
@@ -125,22 +132,24 @@ process guppy_basecalling  {
   
   when: params.basecall
   
-  output: file '*.fastq' into basecalled_fastq_ch, collect_fastq_ch
-          file '*.txt' into basecall_summary_ch
-  
+  output: 
+      file "fail/*.fastq" into failed_fastq_ch
+      file "pass/*.fastq" into passed_fastq_ch
+      file '*.txt' into basecall_summary_ch
+      
   script:
   if (params.basecall == 'cpu')
       if (params.trim)
         """
         guppy_basecaller -i . --save_path . \
-        --config $params.model --cpu_threads_per_caller 1 \
-        --num_callers ${task.cpus} --trim_strategy "dna" --trim_barcodes --compress_fastq
+        --config $params.model --cpu_threads_per_caller ${task.cpus} \
+        --num_callers 1  --trim_strategy "dna" --trim_barcodes --compress_fastq
         """
       else
         """
         guppy_basecaller -i . --save_path . \
-        --config $params.model --cpu_threads_per_caller 1 \
-        --num_callers ${task.cpus} 
+        --config $params.model --cpu_threads_per_caller ${task.cpus} \
+        --num_callers 1
         """
 
   else if (params.basecall == 'gpu')
@@ -160,9 +169,18 @@ process guppy_basecalling  {
 basecall_summary_ch.collectFile(name: "${params.runid}_summary.txt", keepHeader:true, 
   skip:1, storeDir:"$params.outdir/basecall").set{merged_summary_ch}
 
-//basecalled_fastq_ch.into{fastq_collect_ch,bfastq_ch}
+guppy_fastqs_ch=Channel.empty()
+if (params.pass){
+  guppy_fastqs_ch << passed_fastq_ch
+} else {
+  guppy_fastqs_ch << passed_fastq_ch.mix(failed_fastq_ch)
+}
+
+ guppy_fastqs_ch.into{basecalled_fastq_ch; collect_fastq_ch} 
+
 
 collect_fastq_ch.collectFile(name: "${params.runid}.fastq", storeDir:"$params.outdir/basecall").set{merged_fastq_ch}
+
 
 
 /*
@@ -205,7 +223,7 @@ process pyco_quality_control {
 */
 all_fastqs_ch=basecalled_fastq_ch.mix(fastq_ch)
 
-all_fastqs_ch.into{fastq_tax_ch; fastq_assembly_ch; fastq_mapping_ch}
+all_fastqs_ch.into{fastq_tax_ch; fastq_assembly_ch; fastq_mapping_ch; fastq_resistance_ch}
 
 params.tax=false
 
@@ -243,7 +261,7 @@ process assembly_with_flye {
   
   cpus 30
   
-  publishDir "$params.outdir/assembly", mode: 'symlink', pattern: "*"
+  publishDir "$params.outdir/assembly/$params.runid", mode: 'copy', pattern: "*"
 
   input: file fastqs from fastq_assembly_ch
   
@@ -263,6 +281,9 @@ process assembly_with_flye {
     flye --nano-raw $fastqs --out-dir . --threads ${task.cpus}
     """
 }
+
+assembled_fasta_ch = fasta_ch
+
 
 /*
 ================================================================
@@ -331,6 +352,36 @@ process coverage_plot {
   pycoQC --summary_file $summary -a $bam -o ${params.runid}_cov.html
   """
 }
+
+/*
+================================================================
+    Resistance gene identifier
+================================================================
+*/
+params.res = false
+params.card = '.'
+
+
+process rgi {
+  container 'quay.io/biocontainers/rgi:5.2.0--pyhdfd78af_0'
+  
+  cpus 20
+  
+  when params.res == 'rgi'
+
+  input: file fasta from assembled_fasta_ch
+  
+  output: file "*.txt" into rgi_output_ch
+  
+  script:
+  """
+  rgi load -i $params.card/card.json --card_annotation $params.card/card_database_*.fasta \
+  --wildcard_annotation $params.card/wildcard_database_*.fasta \
+  --wildcard_index $params.card/wildcard/index-for-model-sequences.txt
+  rgi main -i $fasta -o $params.runid -t contig -a BLAST -n ${task.cpus} --split_prodigal_jobs --clean
+  """
+}
+
 
 workflow.onComplete {
 	  RED='\033[0;31m'
