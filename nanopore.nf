@@ -78,11 +78,7 @@ if (params.help) {
     File batching
 ================================================================
 */
-params.ftype='fast5'
-params.watch=false
-params.batch=5000
-params.wait=1
-fileName='done.fast5'
+
 if (params.watch) {
   input_files_ch=Channel.watchPath("$params.input/*.$params.ftype").
     until{file->file.name == fileName}
@@ -114,14 +110,6 @@ echo "spent $params.wait seconds watching fast5 dir" > $params.input/$fileName
     Basecalling, adapter and barcode trimming
 ================================================================
 */
-
-params.model='dna_r9.4.1_450bps_fast.cfg'
-params.basecall=false
-params.runid='runid_0'
-params.trim=false
-params.pass=true
-
-
 
 process guppy_basecalling  {
   container 'genomicpariscentre/guppy:4.5.3'
@@ -181,14 +169,11 @@ if (params.pass){
 
 collect_fastq_ch.collectFile(name: "${params.runid}.fastq", storeDir:"$params.outdir/basecall").set{merged_fastq_ch}
 
-
-
 /*
 ================================================================
     Quality Control
 ================================================================
 */
-params.qc=false
 
 if (params.basecall) {
   summaries_ch=Channel.fromPath("$params.outdir/basecall/*summary.txt")
@@ -225,9 +210,6 @@ all_fastqs_ch=basecalled_fastq_ch.mix(fastq_ch)
 
 all_fastqs_ch.into{fastq_tax_ch; fastq_assembly_ch; fastq_mapping_ch; fastq_resistance_ch}
 
-params.tax=false
-
-params.meta=false
 
 process centrifuge_fastqs {
   container 'quay.io/biocontainers/centrifuge:1.0.4_beta--he513fc3_5'
@@ -254,7 +236,6 @@ centrifuge_reports_ch.collectFile(name:"${params.runid}_centrifuge_report.txt", 
     Assembly
 ================================================================
 */
-params.assembly=false
 
 process assembly_with_flye {
   container 'quay.io/biocontainers/flye:2.8.3--py27h6a42192_1'
@@ -290,9 +271,6 @@ assembled_fasta_ch = fasta_ch
     Map to reference genome, plot coverage
 ================================================================
 */
-
-params.map=false
-params.reference="$params.input/*.fna"
 
 process minimap2_reads_to_reference {
   container 'quay.io/biocontainers/minimap2:2.18--h5bf99c6_0'
@@ -358,9 +336,6 @@ process coverage_plot {
     Resistance gene identifier
 ================================================================
 */
-params.res = false
-params.card = '.'
-
 
 process rgi {
   container 'quay.io/biocontainers/rgi:5.2.0--pyhdfd78af_0'
