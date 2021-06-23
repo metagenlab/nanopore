@@ -81,15 +81,36 @@ if (params.help) {
 if (params.watch) {
   input_files_ch=Channel.watchPath("$params.fast5").
     until{file->file.name == fileName}
-    }
-else {
-  input_files_ch=Channel
-    .fromPath(params.samples)
-    .splitCsv(header:true)
-    .map{ row-> tuple(row.sampleId, file(row.fastq))}
+} else {
+  fast5_ch = Channel.empty()
+  fastq_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, file(row.fastq))}
 }
 
-input_files_ch.into{fast5_ch; fastq_ch}
+if (params.reference) {
+  references_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, file(row.reference))}
+} else {
+    references_ch = Channel.empty()
+} 
+
+if (params.summary) {
+  summaries_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, file(row.summary))}
+} else {
+  summaries_ch=Channel.empty()
+}
+
+if (params.hybrid) {
+  illumina_fastq_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, file(row.r1), file(row.r2))}
+} else {
+  illumina_fastq_ch=Channel.empty()
+}
 
 // porcess that creates a text file within a time limit. 
 // The text file presence stops nextflow's watch for new files
@@ -116,16 +137,16 @@ echo "spent $params.wait seconds watching fast5 dir" > $params.fast5/$fileName
 process guppy_basecalling  {
   container 'genomicpariscentre/guppy:4.5.3'
 
-  cpus 10
+  cpus params.cores
 
   when: params.basecall
 
   input: file fast5List from fast5_ch.buffer(size: params.batch, remainder: true)
 
   output: 
-      file "fail/*.fastq" into failed_fastq_ch
-      file "pass/*.fastq" into passed_fastq_ch
-      file '*.txt' into basecall_summary_ch
+  file "fail/*.fastq" into failed_fastq_ch
+  file "pass/*.fastq" into passed_fastq_ch
+  file '*.txt' into basecall_summary_ch
       
   script:
   if (params.basecall == 'cpu')
@@ -172,9 +193,37 @@ if (params.collect) {
   collect_fastq_ch.collectFile(name: "${params.runid}.fastq", storeDir:"$params.outdir/basecall").set{merged_fastq_ch}
   }
 
-all_fastqs_ch=basecalled_fastq_ch.mix(fastq_ch)
+raw_fastqs_ch = basecalled_fastq_ch.mix(fastq_ch)
+raw_fastqs_ch.into{filter_fastqs_ch; fastqs_ch}
 
-all_fastqs_ch.into{fastq_quality_ch; fastq_tax_ch; fastq_assembly_ch; fastq_mapping_ch; fastq_resistance_ch}
+/*
+================================================================
+    Quality filtering
+================================================================
+*/
+
+process quality_reads_filtering {
+  container 'quay.io/biocontainers/nanofilt:2.8.0--py_0'
+
+  tag "${sampleId}"
+  
+  publishDir "$params.outdir/filtered/$sampleId", mode: 'copy', pattern: "*"
+
+  when: params.filter
+
+  input: set sampleId, file(fastq) from filter_fastqs_ch
+  
+  output: tuple(sampleId, file("${sampleId}.fastq")) into quality_fastqs_ch
+  
+  script:
+  """
+  NanoFilt $fastq -q $params.phred > ${sampleId}.fastq
+  """
+}
+
+all_fastqs_ch = quality_fastqs_ch.mix(fastqs_ch)
+all_fastqs_ch.into{fastq_qc_ch; fastq_tax_ch; fastq_assembly_ch; fastq_hybrid_assembly_ch; fastq_mapping_reads_ch; fastq_mapping_assembly_ch ; fastq_resistance_ch}
+
 
 /*
 ================================================================
@@ -182,30 +231,25 @@ all_fastqs_ch.into{fastq_quality_ch; fastq_tax_ch; fastq_assembly_ch; fastq_mapp
 ================================================================
 */
 
-summaries_ch = Channel.empty()
-if (params.basecall) {
-  summaries_ch=Channel.fromPath("$params.outdir/basecall/*summary.txt")
-}
-if (!params.basecall && params.qc=='pycoqc') {
-  summaries_ch=Channel.fromPath("$params.summary")
-}
 
 summaries_ch.into{summary_qc_ch; summary_aln_ch}
 
-process pyco_quality_control {
+process pyco_qc {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
   
+  tag "${sampleId}"
+
   when: params.qc=='pycoqc'
   
-  publishDir "$params.outdir/qc", mode: 'symlink', pattern: "*"
+  publishDir "$params.outdir/qc/$sampleId", mode: 'copy', pattern: "*"
   
-  input: file summaryTxt from summary_qc_ch
+  input: set sampleId, file(summary) from summary_qc_ch
   
-  output: file "${params.runid}.html" into html_report_ch
+  output: tuple(sampleId, file("${sampleId}.html")) into html_report_ch
   
   script:
   """
-  pycoQC -f $summaryTxt -o ${params.runid}.html
+  pycoQC -f $summary -o ${sampleId}.html
   """
 }
 
@@ -214,13 +258,13 @@ process nanoplot_qc {
   
   tag "${sampleId}"
 
-  cpus 10
+  cpus params.cores
   
   publishDir "$params.outdir/qc/$sampleId", mode: 'copy', pattern: "*"
   
   when: params.qc=='nanoplot'
 
-  input: input: set sampleId, file(fastq) from fastq_quality_ch
+  input: set sampleId, file(fastq) from fastq_qc_ch
 
   output: tuple(sampleId, file("${sampleId}*")) into nanoplot_ch
   
@@ -229,6 +273,8 @@ process nanoplot_qc {
   NanoPlot -t ${task.cpus} -p $sampleId -o . --fastq $fastq
   """
 }
+
+
 
 /*
 ================================================================
@@ -241,11 +287,11 @@ process centrifuge_fastqs {
 
   tag "${sampleId}"
   
-  cpus 20
+  cpus params.cores
   
   publishDir "$params.outdir/centrifuge/$sampleId", mode: 'copy', pattern: "*"
   
-  when: params.tax == 'centrifuge'
+  when: params.tax
 
   input: set sampleId, file(fastq) from fastq_tax_ch
   
@@ -253,7 +299,8 @@ process centrifuge_fastqs {
   
   script:
   """
-  centrifuge -p ${task.cpus} -x $params.cendb/$params.cenind -U $fastq -S ${sampleId}-out.txt --report-file ${sampleId}-report.txt
+  centrifuge -p ${task.cpus} -x $params.cendb/$params.cenin -U $fastq -S ${sampleId}-out.txt
+  centrifuge-kreport -x $params.cendb/$params.cenin ${sampleId}-out.txt > ${sampleId}-kreport.txt
   """
 }
 if (params.collect){
@@ -274,17 +321,18 @@ process assembly_with_flye {
 
   tag "${sampleId}"
 
-  cpus 30
+  cpus params.cores
 
-  publishDir "$params.outdir/flye/$sampleId", mode: 'copy', pattern: "*"
+  publishDir "$params.outdir/assembly/$sampleId", mode: 'copy', pattern: "*"
 
-  when: params.assembly == 'flye' 
+  when: params.assembly
 
   input: set sampleId, file(fastq) from fastq_assembly_ch
   
-  output: tuple(sampleId, file("assembly.fasta")) into fasta_ch
-          tuple(sampleId, file("assembly_graph.gfa")) into gfa_ch
-          tuple(sampleId, file("assembly_info.txt")) into assembly_info_ch
+  output: 
+  tuple(sampleId, file("assembly.fasta")) into fasta_ch
+  tuple(sampleId, file("assembly_graph.gfa")) into gfa_ch
+  tuple(sampleId, file("assembly_info.txt")) into assembly_info_ch
   
   script:
   if (params.meta)
@@ -297,8 +345,73 @@ process assembly_with_flye {
     """
 }
 
-assembled_fasta_ch = fasta_ch
 
+
+
+/*
+================================================================
+    Hybrid assembly
+================================================================
+*/
+
+process hybrid_assembly_unicycler {
+  container 'quay.io/biocontainers/unicycler:0.4.8--py38h8162308_3'
+
+  tag "${sampleId}"   
+
+  cpus params.cores
+
+  publishDir "$params.outdir/hybrid-assembly/$sampleId", mode: 'copy', pattern: "*"
+
+  when: params.hybrid 
+
+  input: 
+  set sampleId, file(fastq) from fastq_hybrid_assembly_ch
+  set sampleId, file(r1), file(r2) from illumina_fastq_ch
+  
+  output: 
+  tuple(sampleId, file("assembly.fasta")) into hybrid_fasta_ch
+  tuple(sampleId, file("assembly.gfa")) into hybrid_gfa_ch
+
+  script:
+  """
+  unicycler -1 $r1 -2 $r2 -l $fastq -o . -t ${task.cpus}
+  """
+}
+
+
+hybrid_fasta_ch.mix(fasta_ch).set{assembled_fasta_ch} 
+assembled_fasta_ch.into{assemblies_resistance_ch; assemblies_map_ch}
+
+
+/*
+================================================================
+    Mapping reads against assembly
+================================================================
+*/
+process mapping_reads_against_assembly {
+  container 'quay.io/biocontainers/minimap2:2.18--h5bf99c6_0'
+  
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/mapping/$sampleId", mode: 'symlink', pattern: "*"
+  
+  when: (params.map && params.assembly)
+  
+  input: 
+  set sampleId, file(fastq) from fastq_mapping_assembly_ch
+  set sampleId, file(fasta) from assemblies_map_ch
+  
+  output: 
+  tuple(sampleId, file("${sampleId}-assembly.sam")) into sam_assembly_ch
+  
+  script:
+  """
+  minimap2 -t ${task.cpus} -ax map-ont $fasta $fastq > ${sampleId}-assembly.sam
+  """
+}
 
 /*
 ================================================================
@@ -311,46 +424,50 @@ process minimap2_reads_to_reference {
   
   tag "${sampleId}"
 
-  cpus 20
+  cpus params.cores
 
-  publishDir "$params.outdir/minimap2/$sampleId", mode: 'symlink', pattern: "*"
+  publishDir "$params.outdir/mapping/$sampleId", mode: 'symlink', pattern: "*"
 
-  when: params.map=='minimap2'
+  when: (params.map && params.reference)
 
   input: 
-  set sampleId, file(fastq) from fastq_mapping_ch
-  
-  output: tuple(sampleId, file("${sampleId}.sam")) into sam_ch
+  set sampleId, file(fastq) from fastq_mapping_reads_ch
+  set sampleId, file(reference) from references_ch 
+
+  output: 
+  tuple(sampleId, file("${sampleId}-ref.sam")) into sam_ref_ch
   
   script:
   """
-  minimap2 -t ${task.cpus} -ax map-ont ${params.reference} $fastq > ${sampleId}.sam
+  minimap2 -t ${task.cpus} -ax map-ont $reference $fastq > ${sampleId}-ref.sam
   """
 }
 
+sam_assembly_ch.mix(sam_ref_ch).set{sam_ch}
+
 process sam_to_sorted_bam {
-  container 'quay.io/biocontainers/samtools:0.1.19--h270b39a_9'
+  container 'quay.io/biocontainers/samtools:1.12--h9aed4be_1'
   
   tag "${sampleId}"
 
-  cpus 10
+  cpus params.cores
 
   publishDir "$params.outdir/coverage/$sampleId", mode: 'copy', pattern: "*"
   
-  when: params.map
+  when: (params.map && params.reference)
   
   input: set sampleId, file(sam) from sam_ch
   
   output: 
-  tuple(sampleId, file("${sampleId}.bam")) into bam_ch
-  tuple(sampleId, file("${sampleId}.txt")) into map_info_ch
-  tuple(sampleId, file("${sampleId}.bam.bai")) into bai_ch
+  tuple(sampleId, file("*.bam")) into bam_ch
+  tuple(sampleId, file("*.mapped")) into map_info_ch
+  tuple(sampleId, file("*.bam.bai")) into bai_ch
 
   script:
   """
-  samtools flagstat $sam > ${sampleId}.txt
-  samtools view -@ ${task.cpus} -bS $sam | samtools sort -@ ${task.cpus} - ${sampleId} 
-  samtools index ${sampleId}.bam
+  samtools view -F 0x904 -c $sam > ${sam.baseName}.mapped
+  samtools view -@ ${task.cpus} -bS $sam | samtools sort -@ ${task.cpus} -o ${sam.baseName}.bam
+  samtools index ${sam.baseName}.bam
   """
 }
 
@@ -364,37 +481,38 @@ process bam_to_bed{
 
   publishDir "$params.outdir/coverage/$sampleId", mode: 'copy', pattern: "*"
 
-  when: params.map
+  when: (params.map && params.reference)
   
   input: set sampleId, file(bam) from bed_bam_ch
 
-  output: 
-  tuple(sampleId, file("${sampleId}.tsv")) into cov_tsv_ch
+  output: tuple(sampleId, file("*.tsv")) into cov_tsv_ch
   
   script:
   """
-  bedtools genomecov -d -ibam $bam > ${sampleId}.tsv
+  bedtools genomecov -d -ibam $bam > ${bam.baseName}.tsv
   """
-  }
+}
 
 
 process pycoQC_coverage_plot {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
   
-  publishDir "$params.outdir/coverage", mode: 'copy', pattern: "*.html"
+  tag "${sampleId}"
+
+  publishDir "$params.outdir/coverage/$sampleId", mode: 'copy', pattern: "*.html"
   
-  when: params.coverage=='pycoqc'
+  when: (params.coverage=='pycoqc' && params.reference)
   
   input: 
-  file bam from pyco_bam_ch
-  file bai from bai_ch
-  file summary from summary_aln_ch
+  set sampleId, file(bam) from pyco_bam_ch
+  set sampleId, file(bai) from bai_ch
+  set sampleId, file(summary) from summary_aln_ch
 
-  output: file "*.html" into cov_ch
+  output: tuple(sampleId, file("*_cov.html")) into cov_ch
   
   script:
   """
-  pycoQC --summary_file $summary -a $bam -o ${params.runid}_cov.html
+  pycoQC --summary_file $summary -a $bam -o ${bam.baseName}_cov.html
   """
 }
 
@@ -405,29 +523,45 @@ process pycoQC_coverage_plot {
 */
 
 process rgi {
-  container 'quay.io/biocontainers/rgi:5.2.0--pyhdfd78af_0'
+  container 'docker-daemon:metagenlab/rgi:5.2.0-3.1.2'
 
   tag "${sampleId}"
 
-  publishDir "$params.outdir/resistance/$sampleId", mode: 'copy', pattern: "*"
+  publishDir "$params.outdir/resistance", mode: 'copy', pattern: "*"
 
-  cpus 20
+  cpus params.cores
   
-  when params.res == 'rgi'
+  when params.res
 
-  input: set sampleId, file(fasta) from assembled_fasta_ch
+  input: set sampleId, file(fasta) from assemblies_resistance_ch
   
-  output: file "*.txt" into rgi_txt_ch
-          file "*.json" into rgi_json_ch
-          file "*.png" into rgi_heatmap_ch
+  output: 
+  tuple(sampleId, file("${sampleId}.txt")) into rgi_txt_ch
+  tuple(sampleId, file("${sampleId}.json")) into rgi_json_ch
   
   script:
   """
   rgi load -i $params.card/card.json --card_annotation $params.card/card_database_*.fasta \
   --wildcard_annotation $params.card/wildcard_database_*.fasta \
   --wildcard_index $params.card/wildcard/index-for-model-sequences.txt
-  rgi main -i $fasta -o $params.runid -t contig -a BLAST -n ${task.cpus} --split_prodigal_jobs --clean
-  rgi heatmap --input . --output ${sampleId}_heatmap.png
+  rgi main -i $fasta -o ${sampleId} -t contig -a BLAST -n ${task.cpus} --split_prodigal_jobs --clean
+  """
+}
+
+
+
+process rgi_heatmap {
+  container 'docker-daemon:metagenlab/rgi:5.2.0-3.1.2'
+
+  publishDir "$params.outdir/resistance", mode: 'copy', pattern: "*"
+
+  input: file json from rgi_json_ch.collect()
+  
+  output: file "heatmap-all.png" into rgi_heatmap_ch
+  
+  script:
+  """
+  rgi heatmap -i . -o heatmap-all.png -cat drug_class -clus samples
   """
 }
 
