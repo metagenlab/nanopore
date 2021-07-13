@@ -205,6 +205,8 @@ raw_fastqs_ch.into{filter_fastqs_ch; fastqs_ch}
 process quality_reads_filtering {
   container 'quay.io/biocontainers/nanofilt:2.8.0--py_0'
 
+  conda 'bioconda::nanofilt=2.8.0'
+  
   tag "${sampleId}"
   
   publishDir "$params.outdir/filtered/$sampleId", mode: 'copy', pattern: "*"
@@ -237,11 +239,13 @@ summaries_ch.into{summary_qc_ch; summary_aln_ch}
 process pyco_qc {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
   
+  conda 'bioconda::pycoqc=2.5.2'
+  
   tag "${sampleId}"
 
-  when: params.qc=='pycoqc'
-  
   publishDir "$params.outdir/qc/$sampleId", mode: 'copy', pattern: "*"
+
+  when: (params.qc=='pycoqc' && params.summary)
   
   input: set sampleId, file(summary) from summary_qc_ch
   
@@ -255,6 +259,8 @@ process pyco_qc {
 
 process nanoplot_qc {
   container 'quay.io/biocontainers/nanoplot:1.38.0--pyhdfd78af_0'
+  
+  conda 'bioconda::nanoplot=1.38.0'
   
   tag "${sampleId}"
 
@@ -284,6 +290,8 @@ process nanoplot_qc {
 
 process centrifuge_fastqs {
   container 'quay.io/biocontainers/centrifuge:1.0.4_beta--h9a82719_6'
+
+  conda 'bioconda::centrifuge=1.0.4_beta'
 
   tag "${sampleId}"
   
@@ -319,6 +327,8 @@ if (params.collect){
 process assembly_with_flye {
   container 'quay.io/biocontainers/flye:2.8.3--py27h6a42192_1' 
 
+  conda 'bioconda::flye=2.8.3'
+
   tag "${sampleId}"
 
   cpus params.cores
@@ -337,11 +347,11 @@ process assembly_with_flye {
   script:
   if (params.meta)
     """
-    flye --nano-raw $fastq --out-dir . --threads ${task.cpus} --meta
+    flye --nano-raw $fastq -t ${task.cpus} --meta -o . 
     """
   else
     """
-    flye --nano-raw $fastq --out-dir . --threads ${task.cpus}
+    flye --nano-raw $fastq -t ${task.cpus} -o .
     """
 }
 
@@ -356,6 +366,8 @@ process assembly_with_flye {
 
 process hybrid_assembly_unicycler {
   container 'quay.io/biocontainers/unicycler:0.4.8--py38h8162308_3'
+
+  conda 'bioconda::unicycler=0.4.8'
 
   tag "${sampleId}"   
 
@@ -375,14 +387,13 @@ process hybrid_assembly_unicycler {
 
   script:
   """
-  unicycler -1 $r1 -2 $r2 -l $fastq -o . -t ${task.cpus}
+  unicycler -1 $r1 -2 $r2 -l $fastq -t ${task.cpus} -o .
   """
 }
 
 
 hybrid_fasta_ch.mix(fasta_ch).set{assembled_fasta_ch} 
-assembled_fasta_ch.into{assemblies_resistance_ch; assemblies_map_ch}
-
+assembled_fasta_ch.into{assemblies_resistance_ch; assemblies_map_ch; assemblies_prokka_ch}
 
 /*
 ================================================================
@@ -390,13 +401,15 @@ assembled_fasta_ch.into{assemblies_resistance_ch; assemblies_map_ch}
 ================================================================
 */
 process mapping_reads_against_assembly {
-  container 'quay.io/biocontainers/minimap2:2.18--h5bf99c6_0'
+  container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
+  
+  conda 'bioconda::minimap2=2.20'
   
   tag "${sampleId}"
 
   cpus params.cores
 
-  publishDir "$params.outdir/mapping/$sampleId", mode: 'symlink', pattern: "*"
+  publishDir "$params.outdir/mapping/$sampleId", mode: 'copy', pattern: "*"
   
   when: (params.map && params.assembly)
   
@@ -405,11 +418,11 @@ process mapping_reads_against_assembly {
   set sampleId, file(fasta) from assemblies_map_ch
   
   output: 
-  tuple(sampleId, file("${sampleId}-assembly.sam")) into sam_assembly_ch
+  tuple(sampleId, file("${sampleId}-assembly.bam")) into bam_assembly_ch
   
   script:
   """
-  minimap2 -t ${task.cpus} -ax map-ont $fasta $fastq > ${sampleId}-assembly.sam
+  minimap2 -t ${task.cpus} -ax map-ont $fasta $fastq | samtools sort -@ ${task.cpus} -o ${sampleId}-assembly.bam
   """
 }
 
@@ -420,13 +433,15 @@ process mapping_reads_against_assembly {
 */
 
 process minimap2_reads_to_reference {
-  container 'quay.io/biocontainers/minimap2:2.18--h5bf99c6_0'
+  container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
+  
+  conda 'bioconda::minimap2=2.20'
   
   tag "${sampleId}"
 
   cpus params.cores
 
-  publishDir "$params.outdir/mapping/$sampleId", mode: 'symlink', pattern: "*"
+  publishDir "$params.outdir/mapping/$sampleId", mode: 'copy', pattern: "*"
 
   when: (params.map && params.reference)
 
@@ -435,48 +450,25 @@ process minimap2_reads_to_reference {
   set sampleId, file(reference) from references_ch 
 
   output: 
-  tuple(sampleId, file("${sampleId}-ref.sam")) into sam_ref_ch
+  tuple(sampleId, file("${sampleId}-ref.bam")) into bam_ref_ch
+  tuple(sampleId, file("${sampleId}-ref.bam.bai")) into bai_ch
   
   script:
   """
-  minimap2 -t ${task.cpus} -ax map-ont $reference $fastq > ${sampleId}-ref.sam
+  minimap2 -t ${task.cpus} -ax map-ont $reference $fastq | samtools sort -@ ${task.cpus} -o ${sampleId}-ref.bam
+  samtools index ${sampleId}-ref.bam
+  samtools view -c -F 260 ${sampleId}-ref.bam > ${sampleId}-ref.bam
   """
 }
 
-sam_assembly_ch.mix(sam_ref_ch).set{sam_ch}
-
-process sam_to_sorted_bam {
-  container 'quay.io/biocontainers/samtools:1.12--h9aed4be_1'
-  
-  tag "${sampleId}"
-
-  cpus params.cores
-
-  publishDir "$params.outdir/coverage/$sampleId", mode: 'copy', pattern: "*"
-  
-  when: (params.map && params.reference)
-  
-  input: set sampleId, file(sam) from sam_ch
-  
-  output: 
-  tuple(sampleId, file("*.bam")) into bam_ch
-  tuple(sampleId, file("*.mapped")) into map_info_ch
-  tuple(sampleId, file("*.bam.bai")) into bai_ch
-
-  script:
-  """
-  samtools view -F 0x904 -c $sam > ${sam.baseName}.mapped
-  samtools view -@ ${task.cpus} -bS $sam | samtools sort -@ ${task.cpus} -o ${sam.baseName}.bam
-  samtools index ${sam.baseName}.bam
-  """
-}
-
-all_bams_ch = bam_ch
-all_bams_ch.into{pyco_bam_ch; bed_bam_ch}
+cov_bam_ch = bam_ref_ch
+cov_bam_ch.into{pyco_bam_ch; bed_bam_ch}
 
 process bam_to_bed{
   container 'quay.io/biocontainers/bedtools:2.30.0--h7d7f7ad_1'
 
+  conda 'bioconda::bedtools=2.30.0'
+  
   tag "${sampleId}"
 
   publishDir "$params.outdir/coverage/$sampleId", mode: 'copy', pattern: "*"
@@ -485,7 +477,7 @@ process bam_to_bed{
   
   input: set sampleId, file(bam) from bed_bam_ch
 
-  output: tuple(sampleId, file("*.tsv")) into cov_tsv_ch
+  output: tuple(sampleId, file("${bam.baseName}.tsv")) into cov_tsv_ch
   
   script:
   """
@@ -497,11 +489,13 @@ process bam_to_bed{
 process pycoQC_coverage_plot {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
   
+  conda 'bioconda::pycoqc=2.5.2'
+  
   tag "${sampleId}"
 
   publishDir "$params.outdir/coverage/$sampleId", mode: 'copy', pattern: "*.html"
   
-  when: (params.coverage=='pycoqc' && params.reference)
+  when: (params.coverage && params.reference && params.summary)
   
   input: 
   set sampleId, file(bam) from pyco_bam_ch
@@ -525,6 +519,8 @@ process pycoQC_coverage_plot {
 process rgi {
   container 'docker-daemon:metagenlab/rgi:5.2.0-3.1.2'
 
+  conda 'bioconda::rgi=5.2.0'
+  
   tag "${sampleId}"
 
   publishDir "$params.outdir/resistance", mode: 'copy', pattern: "*"
@@ -553,6 +549,8 @@ process rgi {
 process rgi_heatmap {
   container 'docker-daemon:metagenlab/rgi:5.2.0-3.1.2'
 
+  conda 'bioconda::rgi=5.2.0'
+
   publishDir "$params.outdir/resistance", mode: 'copy', pattern: "*"
 
   input: file json from rgi_json_ch.collect()
@@ -565,6 +563,34 @@ process rgi_heatmap {
   """
 }
 
+/*
+================================================================
+    Genome annotation
+================================================================
+*/
+
+process prokka_annotation {
+  container 'quay.io/biocontainers/prokka:1.14.6--pl526_0'
+  
+  conda 'bioconda::prokka=1.14.6'
+  
+  tag "${sampleId}"
+
+  publishDir "$params.outdir/annotation/$sampleId", mode: 'copy', pattern: "*"
+
+  cpus params.cores
+  
+  when params.res
+
+  input: set sampleId, file(fasta) from assemblies_prokka_ch
+  
+  output: tuple(sampleId, file("PROKKA/${sampleId}")) into prokka_out_ch
+  
+  script:
+  """
+  prokka --outdir PROKKA --prefix ${sampleId} $fasta
+  """
+}
 
 workflow.onComplete {
 	  RED='\033[0;31m'
