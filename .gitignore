@@ -1,6 +1,7 @@
 .nextflow/
 .nextflow.*
 work/
-results/
+results*/
 singularity/
+conda/
 *.csv
