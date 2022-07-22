@@ -724,7 +724,8 @@ process homopolish_polishing {
   publishDir "$params.outdir/homopolish/$sampleId", mode: 'copy', pattern: "*"
 
   input:
-    set sampleId, file(assembly),file(centrifuge),file(db) from homo_assembly_ch.join(centrifuge_assembly_reports_ch.groupTuple()).combine(bacteria_db_ch)
+    set sampleId, file(assembly),file(db) from homo_assembly_ch.combine(bacteria_db_ch)
+    //set sampleId, file(assembly),file(centrifuge),file(db) from homo_assembly_ch.join(centrifuge_assembly_reports_ch.groupTuple()).combine(bacteria_db_ch)
   //set sampleId, file(assembly),file(db) from homo_assembly_ch.combine(bacteria_db_ch)
   //file(db) from bacteria_db_ch
 
@@ -736,12 +737,7 @@ process homopolish_polishing {
   script:
   name="homopolish"
   """
-  gen="\$(awk '{if (\$4 == "S"){print \$2,\$6"_"\$7}}' $centrifuge | sort -r | head -n 1 | awk '{print \$2}')"
-  if $params.genus; then
-  homopolish polish -t ${task.cpus} -a $assembly -g \${gen} -m R9.4.pkl -o .
-  else
   homopolish polish -t ${task.cpus} -a $assembly -s $db -m R9.4.pkl -o .
-  fi
   mv assembly_homopolished.fasta homopolish.fasta
   """
 }
@@ -1309,16 +1305,7 @@ process multiqc {
   publishDir "$params.outdir/multiQC/$sampleId", mode: 'copy', pattern: "*"
 
   input:
-//  set sampleId, file ('*') from json_report_ch.groupTuple().join(centrifuge_reports_ch.groupTuple()).join(centrifuge_assembly_reports_ch.groupTuple()).join(quast_results.groupTuple()).join(cov_json_ch.groupTuple()).join(prokka_out_ch.groupTuple())
   set sampleId, file ('*') ,file ('*') ,file ('*') ,file ('*') ,file ('*') ,file ('*') from json_report_ch.join(centrifuge_reports_ch).join(centrifuge_assembly_reports_ch).join(quast_results).join(cov_json_ch).join(prokka_out_ch.groupTuple())
-
-//  set sampleId, file ('*') from json_report_ch.collect().ifEmpty([])
-//  set sampleId ,file ('*') from centrifuge_reports_ch.collect().ifEmpty([])
-//  set sampleId ,file ('*') from centrifuge_assembly_reports_ch.collect().ifEmpty([])
-//  set sampleId ,file ('*') from quast_results.collect().ifEmpty([])
-//  set sampleId, file ('*') from cov_json_ch.collect().ifEmpty([])
-//  tuple set s1, file ('*'),set s2, file ('*'),set s3, file ('*'),set s4, file ('*'),set s5, file ('*'),set s6, file ('*'),set s7, file ('*'), set s8, file ('*'), set s9, file('*') from prokka_out_ch.collect().ifEmpty([])
-//  tuple file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file('*') from prokka_out_ch.collect().ifEmpty([])
 
   output:
   file "multiqc_report.html" into multiqc_report
