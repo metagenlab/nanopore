@@ -2,6 +2,12 @@
 .nextflow.*
 work/
 results*/
+old_results/
+copy_output.sh
+database/
+input_files/
+misc_analysis/
 singularity/
 conda/
-*.csv
+SeqData
+Analyse
