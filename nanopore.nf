@@ -46,7 +46,24 @@ def helpMessage() {
     ========================================================================================
     Options:
         --assembly      Assembler of choice (default=flye)
+	--givenAssembly	notify if the assembly is already provided 
+			(temporary: to save time during testing)
     
+    ========================================================================================
+    Mapping to Human
+    ========================================================================================
+    Options:
+	--mapping	remove reads mapping to the human genome
+
+    ========================================================================================
+    Polishing
+    ========================================================================================
+    Options:
+	--polish	Initiate all polishing (medaka, pepper, 
+			homopolish, racon, pep_med, med_hom, pep_hom)
+			(temporary: final version will only have the chosen polishing method)
+	--qc_assembly	Quality check and comparison of assembly and all polished genomes 
+
     ========================================================================================
     Map to reference genome, plot coverage
     ========================================================================================
@@ -60,8 +77,16 @@ def helpMessage() {
     Options:
         --res       resistance gene tool (default=rgi)
         --card      path to CARD database
+
+    ========================================================================================
+    Annotation 
+    ========================================================================================
+    Options:
+        --annotation	Allow prokka annotation on every assembly/polished genome
+			(currently used for comparing gene numbers)
     Author:
     Farid Chaabane (faridchaabn@gmail.com)
+    Alexandre Jann (alexandre.jann@unil.ch) 
     """.stripIndent()
 }
 
@@ -89,12 +114,19 @@ if (params.watch) {
 }
 
 if (params.reference) {
-  references_ch=Channel.fromPath("$params.samples")
+  ref_ch=Channel.fromPath("$params.samples")
   .splitCsv(header:true)
   .map{ row-> tuple(row.sampleId, file(row.reference))}
+  anot_tmp_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, "reference",file(row.reference))}
+  anot_tmp_ch.into{anot_reference_ch;res_reference_ch}
 } else {
-    references_ch = Channel.empty()
+  ref_ch = Channel.empty()
+  res_reference_ch=Channel.empty()
+  anot_reference_ch=Channel.empty()
 } 
+ref_ch.into{references_ch;qc_reference_ch}
 
 if (params.summary) {
   summaries_ch=Channel.fromPath("$params.samples")
@@ -111,6 +143,38 @@ if (params.hybrid) {
 } else {
   illumina_fastq_ch=Channel.empty()
 }
+
+// DEBUG to avoid assembly during testing
+if (params.givenAssembly) {
+  given_assembly_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, file(row.assembly))}
+  anot_tmp_assembly_ch=Channel.fromPath("$params.samples")
+  .splitCsv(header:true)
+  .map{ row-> tuple(row.sampleId, "flye",file(row.assembly))}
+  anot_tmp_assembly_ch.into{anot_given_assembly_ch;res_assembly_ch;res_flye_ch}
+} else {
+  res_flye_ch=Channel.empty()
+  res_assembly_ch=Channel.empty()
+  given_assembly_ch=Channel.empty()
+  anot_given_assembly_ch=Channel.empty()
+}
+given_assembly_ch.into{qc_flye_assembly;
+	    medaka_assembly_ch;
+	    fasta_ch;
+            racon_mapping_assembly_ch;
+            racon_assembly_ch;
+            homo_assembly_ch;
+            pepper_index_assembly_ch;
+            pepper_assembly_ch;
+            assembly_polish_ch;
+            assembly_tax_ch;
+	    checkm_fasta_ch;
+            fasta_unclassified_ch}
+
+
+Channel.fromPath(params.homopolish_db).into{bacteria_db_ch;bacteria_db_med_hom_ch;bacteria_db_pep_hom_ch}
+//Channel.fromPath("database/homopolish/bacteria.msh").into{bacteria_db_ch;bacteria_db_med_hom_ch;bacteria_db_pep_hom_ch}
 
 // porcess that creates a text file within a time limit. 
 // The text file presence stops nextflow's watch for new files
@@ -205,7 +269,7 @@ raw_fastqs_ch.into{filter_fastqs_ch; fastqs_ch}
 process quality_reads_filtering {
   container 'quay.io/biocontainers/nanofilt:2.8.0--py_0'
 
-  conda 'bioconda::nanofilt=2.8.0'
+  //conda 'bioconda::nanofilt=2.8.0'
   
   tag "${sampleId}"
   
@@ -224,7 +288,20 @@ process quality_reads_filtering {
 }
 
 all_fastqs_ch = quality_fastqs_ch.mix(fastqs_ch)
-all_fastqs_ch.into{fastq_qc_ch; fastq_tax_ch; fastq_assembly_ch; fastq_hybrid_assembly_ch; fastq_mapping_reads_ch; fastq_mapping_assembly_ch ; fastq_resistance_ch}
+all_fastqs_ch.into{medaka_fastq_ch; 
+	racon_fastq_ch; 
+	racon_mapping_fastq_ch; 
+	pepper_fastq_ch; 
+	pepper_index_fastq_ch; 
+	fastq_filter_ch; 
+	fastq_map_ch; 
+	fastq_qc_ch; 
+	fastq_tax_ch; 
+	fastq_hybrid_assembly_ch; 
+	fastq_mapping_reads_ch; 
+	fastq_mapping_assembly_ch ; 
+	fastq_resistance_ch;
+	pep_med_fastq_ch}
 
 
 /*
@@ -234,12 +311,10 @@ all_fastqs_ch.into{fastq_qc_ch; fastq_tax_ch; fastq_assembly_ch; fastq_hybrid_as
 */
 
 
-summaries_ch.into{summary_qc_ch; summary_aln_ch}
+summaries_ch.into{summary_qc_ch; summary_aln_ch; summary_pycoQC_ch}
 
 process pyco_qc {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
-  
-  conda 'bioconda::pycoqc=2.5.2'
   
   tag "${sampleId}"
 
@@ -250,22 +325,21 @@ process pyco_qc {
   input: set sampleId, file(summary) from summary_qc_ch
   
   output: tuple(sampleId, file("${sampleId}.html")) into html_report_ch
+  output: tuple(sampleId, file("${sampleId}.json")) into json_report_ch
   
   script:
   """
-  pycoQC -f $summary -o ${sampleId}.html
+  pycoQC -f $summary -o ${sampleId}.html -j ${sampleId}.json
   """
 }
 
 process nanoplot_qc {
   container 'quay.io/biocontainers/nanoplot:1.38.0--pyhdfd78af_0'
   
-  conda 'bioconda::nanoplot=1.38.0'
-  
   tag "${sampleId}"
 
   cpus params.cores
-  
+
   publishDir "$params.outdir/qc/$sampleId", mode: 'copy', pattern: "*"
   
   when: params.qc=='nanoplot'
@@ -280,6 +354,82 @@ process nanoplot_qc {
   """
 }
 
+/*
+================================================================
+    Mapping to Human
+================================================================
+*/
+
+process minimap_to_human {
+    
+    container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
+  
+    tag "${sampleId}"
+
+    cpus params.cores
+
+    publishDir "$params.outdir/blast/$sampleId", mode: 'copy', pattern: "*"
+// Add a tuple for either human or ref and if re// Add a tuple for either human or ref and if ref change the output to samtools then pycoQC
+    input: set sampleId, file(fastq) from fastq_map_ch
+
+    when: params.mapping
+
+    output: tuple(sampleId, file("${sampleId}*")) into minimap2_aln_ch
+
+    script:
+    """
+    minimap2 -t ${task.cpus} -ax map-ont '/media/IMU/GEN/PROJECTS/MINBC_19_015/Analysis/Kp_seq/GCA_000001405.15_GRCh38_full_analysis_set.fna/GCA_000001405.15_GRCh38_full_analysis_set.fna' $fastq > ${sampleId}-mapping.sam
+    """
+}
+process unmapped_to_human {
+
+  container 'quay.io/staphb/samtools:1.14'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+//  when: false
+
+  publishDir "$params.outdir/samtools/$sampleId", mode: 'copy', pattern: "*"
+
+  input: set sampleId, file(sam) from minimap2_aln_ch
+
+  output: 
+  tuple(sampleId, file("${sampleId}-unmapped.lst")) into unmapped_lst_ch
+
+  script:
+  """
+  samtools view -f 4 $sam > ${sampleId}-unmapped.sam 
+  cut -f 1 ${sampleId}-unmapped.sam | sort  | uniq > ${sampleId}-unmapped.lst
+  """
+}
+
+process filter_human_fastq {
+
+  container 'quay.io/biocontainers/seqtk:1.3--h7132678_4'
+
+  tag "${sampleId}"
+
+  //cpus params.cores
+
+  //when: false
+
+  publishDir "$params.outdir/samtools/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  // MAYBE ADD A GROUP TUPLE HERE !  
+  set sampleId, file(lst), file(fastq) from unmapped_lst_ch.join(fastq_filter_ch)
+  //set sampleId, file(fastq) from fastq_filter_ch
+
+  output:
+  tuple(sampleId, file("${sampleId}-unmapped.fastq")) into fastq_assembly_ch
+
+  script:
+  """
+  seqtk subseq $fastq $lst > ${sampleId}-unmapped.fastq
+  """
+}
 
 
 /*
@@ -291,8 +441,6 @@ process nanoplot_qc {
 process centrifuge_fastqs {
   container 'quay.io/biocontainers/centrifuge:1.0.4_beta--h9a82719_6'
 
-  conda 'bioconda::centrifuge=1.0.4_beta'
-
   tag "${sampleId}"
   
   cpus params.cores
@@ -303,19 +451,18 @@ process centrifuge_fastqs {
 
   input: set sampleId, file(fastq) from fastq_tax_ch
   
-  output: tuple(sampleId, file("${sampleId}*")) into centrifuge_reports_ch
+  output: tuple(sampleId, file("raw-reads*")) into centrifuge_reports_ch
   
   script:
   """
-  centrifuge -p ${task.cpus} -x $params.cendb/$params.cenin -U $fastq -S ${sampleId}-out.txt
-  centrifuge-kreport -x $params.cendb/$params.cenin ${sampleId}-out.txt > ${sampleId}-kreport.txt
+  centrifuge -p ${task.cpus} -x $params.cendb/$params.cenin -U $fastq -S raw-reads-out.txt
+  centrifuge-kreport -x $params.cendb/$params.cenin raw-reads-out.txt > raw-reads.txt
   """
 }
 if (params.collect){
   centrifuge_reports_ch.collectFile(name:"${params.runid}_centrifuge_report.txt", keepHeader:true, 
   skip:1, storeDir:"$params.outdir/taxonomy")
 }
-
 
 
 /*
@@ -327,7 +474,7 @@ if (params.collect){
 process assembly_with_flye {
   container 'quay.io/biocontainers/flye:2.8.3--py27h6a42192_1' 
 
-  conda 'bioconda::flye=2.8.3'
+  //conda 'bioconda::flye=2.8.3'
 
   tag "${sampleId}"
 
@@ -340,11 +487,13 @@ process assembly_with_flye {
   input: set sampleId, file(fastq) from fastq_assembly_ch
   
   output: 
-  tuple(sampleId, file("assembly.fasta")) into fasta_ch
+  tuple(sampleId, file("assembly.fasta")) into flye_fasta_ch
+  tuple(sampleId, name, file("assembly.fasta")) into out_anot_flye_ch 
   tuple(sampleId, file("assembly_graph.gfa")) into gfa_ch
   tuple(sampleId, file("assembly_info.txt")) into assembly_info_ch
   
   script:
+  name="flye"
   if (params.meta)
     """
     flye --nano-raw $fastq -t ${task.cpus} --meta -o . 
@@ -354,9 +503,462 @@ process assembly_with_flye {
     flye --nano-raw $fastq -t ${task.cpus} -o .
     """
 }
+if(params.givenAssembly==false){
+out_anot_flye_ch.into{anot_flye_assembly_ch;res_flye_ch}
+flye_fasta_ch.into{fasta_ch;
+            assembly_tax_ch;
+            medaka_assembly_ch;
+            racon_mapping_assembly_ch;
+            racon_assembly_ch;
+            homo_assembly_ch;
+            pepper_index_assembly_ch;
+            pepper_assembly_ch;
+	    qc_flye_assembly;
+            assembly_polish_ch;
+	    checkm_fasta_ch}
+} else {
+anot_flye_assembly_ch=Channel.empty()
+res_flye_ch=Channel.empty()
+}
+
+process centrifuge_assembly {
+  container 'quay.io/biocontainers/centrifuge:1.0.4_beta--h9a82719_6'
+
+  tag "${sampleId}"
+  
+  cpus params.cores
+  
+  publishDir "$params.outdir/centrifuge/$sampleId", mode: 'copy', pattern: "*"
+  
+  when: params.tax
+
+  input: set sampleId, file(fasta) from assembly_tax_ch
+  
+  output: tuple(sampleId, file("flye-assembly.txt")) into centrifuge_assembly_reports_ch
+  
+  script:
+  """
+  centrifuge -p ${task.cpus} -x $params.cendb/$params.cenin -f $fasta -S flye-out.txt
+  centrifuge-kreport -x $params.cendb/$params.cenin flye-out.txt > flye-assembly.txt
+  """
+}
+if (params.collect){
+  centrifuge_assembly_reports_ch.collectFile(name:"${params.runid}_centrifuge_assembly_report.txt", keepHeader:true, 
+  skip:1, storeDir:"$params.outdir/taxonomy")
+}
+
+/*
+================================================================
+       Retrieve unclassified reads (multiplexed samples  only)
+================================================================
+*/
+
+if (params.keep_unclassified){
+fastq_unclassified_ch=Channel.fromPath("/media/IMU/GEN/PROJECTS/MINBC_19_015/SeqData/multiplex_SA_KP_EC_EF_AN_N_20220718_2nd/all_reads_unclassified.fastq")
+fastq_unclassified_ch.into{fastq_unclass_mapping_ch;fastq_unclass_attributed_ch}
+
+process mapping_unclassified_to_assembly {
+  container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
+  tag "${sampleId}"
+  cpus params.cores
+  publishDir "$params.outdir/unassigned/$sampleId", mode: 'copy', pattern: "*"
+  when: params.keep_unclassified
+  input: set sampleId,file(assembly),file(unclassified_fastq) from fasta_unclassified_ch.combine(fastq_unclass_mapping_ch)
+//  file(unclassified_fastq) from fastq_unclass_mapping_ch
+  output: tuple(sampleId, file("*.sam")) into unclass_to_assembly_ch
+  
+  script:
+  """
+  minimap2 -t  ${task.cpus} -ax map-ont $assembly $unclassified_fastq > ${sampleId}_mapped.sam
+  """
+}
+
+process create_read_list {
+  container 'quay.io/staphb/samtools:1.14'
+  tag "${sampleId}"
+  cpus params.cores
+  publishDir "$params.outdir/unassigned/$sampleId", mode: 'copy', pattern: "*"
+  input: set sampleId, file(sam) from unclass_to_assembly_ch
+  output: 
+  tuple(sampleId, file("*.lst")) into mapped_unclass_list_ch
+  file("*.lst") into mapped_list_ch
+ 
+  script:
+  """
+  samtools view -F 4 $sam | cut -f 1 | sort  | uniq > ${sam.baseName}_mapped.lst
+  """
+}
+
+// Be sure to handle this for any number of multiplexed samples (input section)
+process merge_read_lists {
+  //container 'quay.io/biocontainers/shasta:0.8.0--h7d875b9_0'
+  cpus params.cores
+  publishDir "$params.outdir/unassigned/", mode: 'copy', pattern: "duplicated.lst"
+  input: file ('*') from mapped_list_ch.collect()
+  output: file("duplicated.lst") into unclass_dup_ch
+  
+  script:
+  """
+  cat *.lst | sort | uniq -d > duplicated.lst
+  #cat *.fastq > merged.fastq
+  #awk -F' ' '{if (NR % 4 == 1) {print}}' merged.fastq | cut -c 2-37 > merged.lst
+  #sort merged.lst | uniq -d > duplicated.lst
+  """
+}
+
+process get_attributed_reads {
+  container 'quay.io/biocontainers/seqtk:1.3--h7132678_4'
+  tag "${sampleId}"
+  cpus params.cores
+  publishDir "$params.outdir/unassigned/$sampleId", mode: 'copy', pattern: "*.fastq"
+  input: 
+  set sampleId, file(mapped_lst),file(duplicated_lst), file(unclassified_fastq) from mapped_unclass_list_ch.combine(unclass_dup_ch).combine(fastq_unclass_attributed_ch)
+//  file(duplicated_lst) from unclass_dup_ch 
+//  file(unclassified_fastq) from fastq_unclass_attributed_ch
+  output: tuple(sampleId, file("*.fastq")) into unclass_saved_fastq_ch
+  
+  script:
+  """
+  grep -v $mapped_lst -f $duplicated_lst > notDup.lst
+  seqtk subseq $unclassified_fastq notDup.lst> attributed_no_dup.fastq
+  """
+}
+}
+/*
+================================================================
+    Polishing
+================================================================
+*/
+if(params.polish){
+process medaka_polishing {
+  container 'quay.io/biocontainers/medaka:1.6.0--py38h84d2cc8_0'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/medaka/$sampleId", mode: 'copy', pattern: "*"
+
+  input: 
+  set sampleId, file(assembly), file(fastq) from medaka_assembly_ch.join(medaka_fastq_ch)
+  //set sampleId, file(fastq) from medaka_fastq_ch
+
+  output: 
+  //tuple(sampleId, file("consensus.fasta")) into out_medaka_ch
+  tuple(sampleId, file("medaka.fasta")) into out_medaka_ch
+  tuple(sampleId, name, file("medaka.fasta")) into out_anot_medaka_ch
 
 
+  script:
+  name="medaka"
+  """
+  medaka_consensus -i $fastq -d $assembly -o . -t ${task.cpus} -m r941_min_high_g303
+  mv consensus.fasta medaka.fasta
+  """
+}
 
+out_medaka_ch.into{qc_medaka_ch;med_homo_assembly_ch}
+out_anot_medaka_ch.into{;res_medaka_ch;anot_medaka_ch}
+
+process racon_minimap {
+  container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/polishing/minimap2/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  set sampleId, file(assembly), file(fastq) from racon_mapping_assembly_ch.join(racon_mapping_fastq_ch) 
+  //set sampleId, file(fastq) from racon_mapping_fastq_ch
+
+  output:
+  tuple(sampleId, file("${sampleId}-ONT*")) into racon_mapping_ch
+
+  script:
+  """
+  minimap2 -t ${task.cpus} -d ${sampleId}-assembly.mmi $assembly
+  minimap2 -t ${task.cpus} -a ${sampleId}-assembly.mmi $fastq > ${sampleId}-ONT-to-assembly-sorted.sam
+  """
+}
+
+process racon_polishing {
+  container 'quay.io/biocontainers/racon:1.5.0--h7ff8a90_0'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/racon/$sampleId", mode: 'copy', pattern: "*"
+  
+  input:
+  set sampleId, file(assembly),file(fastq), file(index) from racon_assembly_ch.join(racon_fastq_ch.join(racon_mapping_ch))
+  //set sampleId, file(fastq) from racon_fastq_ch
+  //set sampleId, file(index) from racon_mapping_ch
+
+  output:
+  //tuple(sampleId, file("${sampleId}-rac*")) into out_racon_ch
+  tuple(sampleId, file("racon.fasta")) into out_racon_ch
+  tuple(sampleId, name, file("racon.fasta")) into out_anot_racon_ch
+
+  script:
+  name="racon"
+  """
+  racon -t ${task.cpus} $fastq $index $assembly > ${sampleId}-racon-assembly.fasta
+  mv ${sampleId}-racon-assembly.fasta racon.fasta
+  """
+}
+
+out_racon_ch.set{qc_racon_ch}
+out_anot_racon_ch.into{anot_racon_ch;res_racon_ch}
+
+process homopolish_polishing {
+  //container 'quay.io/biocontainers/homopolish:0.3.3--pyh5e36f6f_0'
+  conda 'bioconda::homopolish=0.3.3' 
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/homopolish/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+    set sampleId, file(assembly),file(centrifuge),file(db) from homo_assembly_ch.join(centrifuge_assembly_reports_ch.groupTuple()).combine(bacteria_db_ch)
+  //set sampleId, file(assembly),file(db) from homo_assembly_ch.combine(bacteria_db_ch)
+  //file(db) from bacteria_db_ch
+
+  output:
+  //tuple(sampleId, file("*homopolished.fasta")) into out_hom_ch
+  tuple(sampleId, file("homopolish.fasta")) into out_hom_ch
+  tuple(sampleId, name, file("homopolish.fasta")) into out_anot_homo_ch
+
+  script:
+  name="homopolish"
+  """
+  gen="\$(awk '{if (\$4 == "S"){print \$2,\$6"_"\$7}}' $centrifuge | sort -r | head -n 1 | awk '{print \$2}')"
+  if $params.genus; then
+  homopolish polish -t ${task.cpus} -a $assembly -g \${gen} -m R9.4.pkl -o .
+  else
+  homopolish polish -t ${task.cpus} -a $assembly -s $db -m R9.4.pkl -o .
+  fi
+  mv assembly_homopolished.fasta homopolish.fasta
+  """
+}
+
+out_hom_ch.set{qc_homo_ch}
+out_anot_homo_ch.into{anot_homo_ch;res_hom_ch}
+
+process PEPPER_mapping {
+
+  container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/polish/pepper/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  set sampleId, file(assembly), file(fastq) from pepper_index_assembly_ch.join(pepper_fastq_ch)
+  //set sampleId, file(fastq) from pepper_fastq_ch
+
+  output:
+  tuple(sampleId, file("${sampleId}-pepper-ref.bam")) into samtools_pepper_ch
+
+  """
+  minimap2 -t ${task.cpus} -ax map-ont $assembly $fastq > ${sampleId}-pepper-ref.bam
+  """
+}
+
+process PEPPER_indexing {
+
+  container 'quay.io/staphb/samtools:1.14'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  //publishDir "$params.outdir/samtools/$sampleId", mode: 'copy', pattern: "*"
+
+  input: set sampleId, file(bam) from samtools_pepper_ch
+
+  output: 
+  tuple(sampleId, file("${sampleId}-pepper-ref.bam")) into bam_pepper_ch
+  tuple(sampleId, file("${sampleId}-pepper-ref.bam.bai")) into bai_pepper_ch
+
+  script:
+  """
+  samtools sort -@ ${task.cpus} -o ${sampleId}-pepper-ref.bam $bam
+  samtools index ${sampleId}-pepper-ref.bam
+  """
+}
+
+pepper_db_ch=Channel.fromPath(params.pepper_db)
+//pepper_db_ch=Channel.fromPath("database/pepper/pepper_r941_guppy305_microbial.pkl")
+
+process PEPPER_polishing {
+
+  container 'docker://kishwars/pepper_deepvariant:r0.8'  
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/PEPPER/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  //file(db) from pepper_db_ch
+  set sampleId, file(assembly), file(bam), file(bai),file(db) from pepper_assembly_ch.join(bam_pepper_ch.join(bai_pepper_ch)).combine(pepper_db_ch)
+  //set sampleId, file(bam) from bam_pepper_ch
+  //set sampleId, file(bai) from bai_pepper_ch
+
+  output:
+  tuple(sampleId, file("pepper.fasta")) into out_pepper_ch
+  tuple(sampleId, name, file("pepper.fasta")) into out_anot_pepper_ch
+
+  script:
+  name="pepper"
+  """
+  pepper polish -t ${task.cpus} -b $bam -f $assembly -m $db -o .
+  mv _pepper_polished.fa pepper.fasta
+  """
+}
+
+out_pepper_ch.into{qc_pepper_ch;pep_homo_assembly_ch ;pep_med_assembly_ch}
+out_anot_pepper_ch.into{anot_pepper_ch;res_pepper_ch}
+
+process homopolish_polishing_from_medaka {
+  //container 'quay.io/biocontainers/homopolish:0.3.3--pyh5e36f6f_0'
+
+  conda 'bioconda::homopolish=0.3.3' 
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/med_hom/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  set sampleId, file(assembly), file(db) from med_homo_assembly_ch.combine(bacteria_db_med_hom_ch)
+//  file(db) from bacteria_db_med_hom_ch
+
+  output:
+  //tuple(sampleId, file("*homopolished.fasta")) into out_med_hom_ch
+  tuple(sampleId, file("med_hom.fasta")) into out_med_hom_ch
+  tuple(sampleId, name, file("med_hom.fasta")) into out_anot_med_homo_ch
+
+  script:
+  name="med_hom"
+  """
+  homopolish polish  -t ${task.cpus} -a $assembly -s $db -m R9.4.pkl -o .
+  mv medaka_homopolished.fasta med_hom.fasta
+  """
+}
+
+out_med_hom_ch.set{qc_med_homo_ch}
+out_anot_med_homo_ch.into{anot_med_homo_ch;res_med_hom_ch}
+
+process homopolish_polishing_from_pepper {
+  //container 'quay.io/biocontainers/homopolish:0.3.3--pyh5e36f6f_0'
+
+  conda 'bioconda::homopolish=0.3.3' 
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/pep_hom/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  set sampleId, file(assembly),file(db) from pep_homo_assembly_ch.combine(bacteria_db_pep_hom_ch)
+  //file(db) from bacteria_db_pep_hom_ch
+
+  output:
+  //tuple(sampleId, file("*homopolished.fasta")) into out_pep_hom_ch
+  tuple(sampleId, file("pep_hom.fasta")) into out_pep_hom_ch
+  tuple(sampleId, name, file("pep_hom.fasta")) into out_anot_pep_homo_ch
+
+  script:
+  name="pep_hom"
+  """
+  homopolish polish -t ${task.cpus} -a $assembly -s $db -m R9.4.pkl -o .
+  mv pepper_homopolished.fasta pep_hom.fasta
+  """
+}
+
+out_pep_hom_ch.set{qc_pep_homo_ch}
+out_anot_pep_homo_ch.into{anot_pep_homo_ch;res_pep_hom_ch}
+
+process medaka_polishing_from_pepper {
+  container 'quay.io/biocontainers/medaka:1.6.0--py38h84d2cc8_0'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+  publishDir "$params.outdir/pep_med/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  set sampleId, file(assembly),file(fastq) from pep_med_assembly_ch.join(pep_med_fastq_ch)
+  //set sampleId, file(fastq) from pep_med_fastq_ch
+
+  output:
+  //tuple(sampleId, file("*")) into qc_pep_med_ch
+  //tuple(sampleId,name, file("pep_med.fasta")) into out_pep_med_ch
+  tuple(sampleId,file("pep_med.fasta")) into out_pep_med_ch
+  tuple(sampleId,name,file("pep_med.fasta")) into out_anot_pep_med_ch
+
+  script:
+  name="pep_med"
+  """
+  medaka_consensus -t ${task.cpus} -i $fastq -d $assembly -o . -m r941_min_high_g303
+  mv consensus.fasta pep_med.fasta
+  """
+}
+
+out_pep_med_ch.set{qc_pep_med_ch}
+out_anot_pep_med_ch.into{anot_pep_med_ch;res_pep_med_ch}
+}
+
+/*
+================================================================
+    Quality Check Assembly
+================================================================
+*/
+
+if(params.qc_assembly){
+process quality_check_assembly {
+  container 'quay.io/biocontainers/quast:5.0.2--py36pl5321hcac48a8_7'
+
+  tag "${sampleId}"
+  
+  publishDir "$params.outdir/QC_Assembly/$sampleId", mode: 'copy', pattern: "*"
+
+  when: params.qc_assembly
+
+  input:
+  set sampleId, file(flye),file(racon) , file(homo), file(medaka), file(pepper) , file(pep_med), file(med_hom), file(pep_hom), file(ref) from qc_flye_assembly.join(qc_racon_ch).join(qc_homo_ch).join(qc_medaka_ch).join(qc_pepper_ch).join(qc_pep_med_ch).join(qc_med_homo_ch).join(qc_pep_homo_ch).join(qc_reference_ch)
+//  set sampleId, file(racon) from qc_racon_ch
+//  set sampleId, file(homo) from qc_homo_ch
+//  set sampleId, file(medaka) from qc_medaka_ch
+//  set sampleId, file(pepper) from qc_pepper_ch
+//  set sampleId, file(pep_med) from qc_pep_med_ch
+//  set sampleId, file(med_hom) from qc_med_homo_ch
+//  set sampleId, file(pep_hom) from qc_pep_homo_ch
+//  set sampleId, file(ref) from qc_reference_ch
+
+  output: 
+  tuple(sampleId, file("${sampleId}_quast*")) into quast_results
+ 
+  when: (params.polish && params.reference)
+ 
+  script:
+  """
+  quast $flye $racon $homo $medaka $pepper $pep_med $med_hom $pep_hom \
+        -l "flye,racon,homopolish,medaka,pepper,pep_med,med_hom,pep_hom" \
+        -r $ref \
+        -o ${sampleId}_quast
+  """
+}
+}
 
 /*
 ================================================================
@@ -367,7 +969,7 @@ process assembly_with_flye {
 process hybrid_assembly_unicycler {
   container 'quay.io/biocontainers/unicycler:0.4.8--py38h8162308_3'
 
-  conda 'bioconda::unicycler=0.4.8'
+  //conda 'bioconda::unicycler=0.4.8'
 
   tag "${sampleId}"   
 
@@ -393,17 +995,18 @@ process hybrid_assembly_unicycler {
 
 
 hybrid_fasta_ch.mix(fasta_ch).set{assembled_fasta_ch} 
-assembled_fasta_ch.into{assemblies_resistance_ch; assemblies_map_ch; assemblies_prokka_ch}
+assembled_fasta_ch.into{assemblies_resistance_ch; assemblies_map_ch}
 
 /*
 ================================================================
     Mapping reads against assembly
 ================================================================
 */
+
 process mapping_reads_against_assembly {
   container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
   
-  conda 'bioconda::minimap2=2.20'
+  //conda 'bioconda::minimap2=2.20'
   
   tag "${sampleId}"
 
@@ -414,18 +1017,40 @@ process mapping_reads_against_assembly {
   when: (params.map && params.assembly)
   
   input: 
-  set sampleId, file(fastq) from fastq_mapping_assembly_ch
-  set sampleId, file(fasta) from assemblies_map_ch
+  set sampleId, file(fastq),file(fasta) from fastq_mapping_assembly_ch.join(assemblies_map_ch)
+//  set sampleId, file(fasta) from assemblies_map_ch
+  
+  output: 
+  tuple(sampleId, file("${sampleId}-assembly.paf")) into mapping_assembly_ch
+  
+  script:
+  """
+  minimap2 -t ${task.cpus} -ax map-ont $fasta $fastq > ${sampleId}-assembly.paf
+  """
+}
+
+process mapping_reads_against_assembly_samtools {
+  container 'quay.io-staphb-samtools-1.14'
+  
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/mapping/$sampleId", mode: 'copy', pattern: "*"
+  
+  when: (params.map && params.assembly)
+  
+  input: 
+  set sampleId, file(paf) from mapping_assembly_ch
   
   output: 
   tuple(sampleId, file("${sampleId}-assembly.bam")) into bam_assembly_ch
   
   script:
   """
-  minimap2 -t ${task.cpus} -ax map-ont $fasta $fastq | samtools sort -@ ${task.cpus} -o ${sampleId}-assembly.bam
+  samtools sort -@ ${task.cpus} -o ${sampleId}-assembly.bam $paf
   """
 }
-
 /*
 ================================================================
     Map to reference genome, plot coverage
@@ -434,9 +1059,7 @@ process mapping_reads_against_assembly {
 
 process minimap2_reads_to_reference {
   container 'quay.io/biocontainers/minimap2:2.20--h5bf99c6_0'
-  
-  conda 'bioconda::minimap2=2.20'
-  
+
   tag "${sampleId}"
 
   cpus params.cores
@@ -446,8 +1069,31 @@ process minimap2_reads_to_reference {
   when: (params.map && params.reference)
 
   input: 
-  set sampleId, file(fastq) from fastq_mapping_reads_ch
-  set sampleId, file(reference) from references_ch 
+  set sampleId, file(fastq), file(reference) from fastq_mapping_reads_ch.join(references_ch)
+//  set sampleId, file(reference) from references_ch 
+
+  output: 
+  tuple(sampleId, file("${sampleId}-paf.sam")) into paf_ref_ch
+  
+  script:
+  """
+  minimap2 -t ${task.cpus} -ax map-ont $reference $fastq > ${sampleId}-paf.sam
+  """
+}
+
+process samtools_reads_to_reference {
+  container 'quay.io-staphb-samtools-1.14'
+
+  tag "${sampleId}"
+
+  cpus params.cores
+
+  publishDir "$params.outdir/mapping/$sampleId", mode: 'copy', pattern: "*"
+
+  when: (params.map && params.reference)
+
+  input: 
+  set sampleId, file(paf) from paf_ref_ch
 
   output: 
   tuple(sampleId, file("${sampleId}-ref.bam")) into bam_ref_ch
@@ -455,9 +1101,10 @@ process minimap2_reads_to_reference {
   
   script:
   """
-  minimap2 -t ${task.cpus} -ax map-ont $reference $fastq | samtools sort -@ ${task.cpus} -o ${sampleId}-ref.bam
+  head $paf
+  samtools sort -@ ${task.cpus} -o ${sampleId}-ref.bam $paf
   samtools index ${sampleId}-ref.bam
-  samtools view -c -F 260 ${sampleId}-ref.bam > ${sampleId}-ref.bam
+  #samtools view -c -F 260 ${sampleId}-ref.bam > ${sampleId}-ref.bam
   """
 }
 
@@ -467,7 +1114,7 @@ cov_bam_ch.into{pyco_bam_ch; bed_bam_ch}
 process bam_to_bed{
   container 'quay.io/biocontainers/bedtools:2.30.0--h7d7f7ad_1'
 
-  conda 'bioconda::bedtools=2.30.0'
+  //conda 'bioconda::bedtools=2.30.0'
   
   tag "${sampleId}"
 
@@ -489,7 +1136,7 @@ process bam_to_bed{
 process pycoQC_coverage_plot {
   container 'quay.io/biocontainers/pycoqc:2.5.2--py_0'
   
-  conda 'bioconda::pycoqc=2.5.2'
+  //conda 'bioconda::pycoqc=2.5.2'
   
   tag "${sampleId}"
 
@@ -498,15 +1145,17 @@ process pycoQC_coverage_plot {
   when: (params.coverage && params.reference && params.summary)
   
   input: 
-  set sampleId, file(bam) from pyco_bam_ch
-  set sampleId, file(bai) from bai_ch
-  set sampleId, file(summary) from summary_aln_ch
+  set sampleId, file(bam), file(bai), file(summary) from pyco_bam_ch.join(bai_ch).join(summary_aln_ch)
+//  set sampleId, file(bai) from bai_ch
+//  set sampleId, file(summary) from summary_aln_ch
 
-  output: tuple(sampleId, file("*_cov.html")) into cov_ch
+  output: 
+  tuple(sampleId, file("*_cov.html")) into cov_ch
+  tuple(sampleId, file("*_cov.json")) into cov_json_ch
   
   script:
   """
-  pycoQC --summary_file $summary -a $bam -o ${bam.baseName}_cov.html
+  pycoQC --summary_file $summary -a $bam -o ${sampleId}_cov.html -j ${bam.baseName}_cov.json
   """
 }
 
@@ -515,64 +1164,88 @@ process pycoQC_coverage_plot {
     Resistance gene identifier
 ================================================================
 */
+if(params.res){
+res_rgi_ch=res_reference_ch.mix(res_assembly_ch,
+	res_flye_ch,
+	res_hom_ch,
+	res_medaka_ch,
+	res_pepper_ch,
+	res_med_hom_ch,
+	res_pep_hom_ch,
+	res_pep_med_ch,
+	res_racon_ch)
 
 process rgi {
-  container 'docker-daemon:metagenlab/rgi:5.2.0-3.1.2'
+  container 'quay.io/biocontainers/rgi:5.2.1--pyha8f3691_2'
+  containerOptions '--bind /data/databases'
 
-  conda 'bioconda::rgi=5.2.0'
-  
-  tag "${sampleId}"
+  //tag "${sampleId}"
+  tag "${fasta.baseName}"
 
-  publishDir "$params.outdir/resistance", mode: 'copy', pattern: "*"
+  publishDir "$params.outdir/resistance/$sampleId", mode: 'copy', pattern: "*"
 
   cpus params.cores
   
   when params.res
 
-  input: set sampleId, file(fasta) from assemblies_resistance_ch
+  input: set sampleId,name,file(fasta) from res_rgi_ch
   
   output: 
-  tuple(sampleId, file("${sampleId}.txt")) into rgi_txt_ch
-  tuple(sampleId, file("${sampleId}.json")) into rgi_json_ch
+  tuple(sampleId, file("${fasta.baseName}.txt")) into rgi_txt_ch
+  tuple(sampleId, file("${fasta.baseName}.json")) into rgi_json_ch
   
   script:
   """
-  rgi load -i $params.card/card.json --card_annotation $params.card/card_database_*.fasta \
-  --wildcard_annotation $params.card/wildcard_database_*.fasta \
-  --wildcard_index $params.card/wildcard/index-for-model-sequences.txt
-  rgi main -i $fasta -o ${sampleId} -t contig -a BLAST -n ${task.cpus} --split_prodigal_jobs --clean
+  #rgi load -i $params.card/card.json --card_annotation $params.card/card_database_*.fasta \
+  #--wildcard_annotation $params.card/wildcard_database_*.fasta \
+  #--wildcard_index $params.card/wildcard/index-for-model-sequences.txt
+  rgi main -i $fasta -o ${fasta.baseName} -t contig -a BLAST -n ${task.cpus} --split_prodigal_jobs --clean
   """
 }
-
 
 
 process rgi_heatmap {
-  container 'docker-daemon:metagenlab/rgi:5.2.0-3.1.2'
+  container 'quay.io/biocontainers/rgi:5.2.1--pyha8f3691_2'
 
-  conda 'bioconda::rgi=5.2.0'
+  //conda 'bioconda::rgi=5.2.0'
 
-  publishDir "$params.outdir/resistance", mode: 'copy', pattern: "*"
+  publishDir "$params.outdir/resistance/$sampleId", mode: 'copy', pattern: "*"
 
-  input: file json from rgi_json_ch.collect()
+  input: 
+  set sampleId,file(json) from rgi_json_ch.groupTuple()
+  //file json from rgi_json_ch.collect()
+  //file json from rgi_json_ch
   
-  output: file "heatmap-all.png" into rgi_heatmap_ch
+  output: 
+  tuple(sampleId,file("heatmap*")) into rgi_heatmap_ch
   
   script:
   """
-  rgi heatmap -i . -o heatmap-all.png -cat drug_class -clus samples
+  rgi heatmap -i . -o heatmap
   """
 }
 
+}
 /*
 ================================================================
     Genome annotation
 ================================================================
 */
+if(params.annotation){
+anot_prokka_ch=anot_reference_ch.mix(anot_flye_assembly_ch,
+	anot_given_assembly_ch,
+	anot_medaka_ch,
+	anot_homo_ch,
+	anot_racon_ch,
+	anot_pepper_ch,
+	anot_med_homo_ch,
+	anot_pep_homo_ch,
+	anot_pep_med_ch)
 
 process prokka_annotation {
-  container 'quay.io/biocontainers/prokka:1.14.6--pl526_0'
+  container 'quay.io-biocontainers-prokka-1.14.6--pl5321hdfd78af_4'
   
-  conda 'bioconda::prokka=1.14.6'
+  //conda 'bioconda::prokka=1.14.6'
   
   tag "${sampleId}"
 
@@ -580,17 +1253,86 @@ process prokka_annotation {
 
   cpus params.cores
   
-  when params.res
+  when params.annotation
 
-  input: set sampleId, file(fasta) from assemblies_prokka_ch
+  input: set sampleId, name,file(fasta) from anot_prokka_ch
   
-  output: tuple(sampleId, file("PROKKA/${sampleId}")) into prokka_out_ch
+  //output: tuple(sampleId, file("${fasta.baseName}*.txt")) into prokka_out_ch
+  output: tuple(sampleId, file("${fasta.baseName}*.txt")) into prokka_out_ch
   
   script:
   """
-  prokka --outdir PROKKA --prefix ${sampleId} $fasta
+  prokka --cpus ${task.cpus} --outdir . --prefix ${fasta.baseName} $fasta --force
   """
 }
+}
+/*
+================================================================
+    CheckM
+================================================================
+*/
+process checkm {
+
+  container 'metagenlab/checkm:1.0.20'
+//  container 'quay.io/biocontainers/checkm-genome:1.2.0--pyhdfd78af_0'
+  containerOptions '--bind /data/databases'
+
+  tag "${sampleId}"
+
+  publishDir "$params.outdir/checkM/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+  set sampleId, file(fasta) from checkm_fasta_ch
+
+  output:
+  file "*checkm_qa.tsv" into checkM_output 
+
+  script:
+  """
+  checkm lineage_wf --genes -t ${task.cpus} -x fasta . .
+  checkm qa -q lineage.ms . -o 2 --tab_table > ${sampleId}_checkm_qa.tsv
+  """
+}
+
+/*
+================================================================
+    Report
+================================================================
+*/
+if(params.res && params.annotation &&  params.tax &&  params.coverage){
+process multiqc {
+
+  conda 'bioconda::multiqc=1.12'
+
+  tag "${sampleId}"
+
+  publishDir "$params.outdir/multiQC/$sampleId", mode: 'copy', pattern: "*"
+
+  input:
+//  set sampleId, file ('*') from json_report_ch.groupTuple().join(centrifuge_reports_ch.groupTuple()).join(centrifuge_assembly_reports_ch.groupTuple()).join(quast_results.groupTuple()).join(cov_json_ch.groupTuple()).join(prokka_out_ch.groupTuple())
+  set sampleId, file ('*') ,file ('*') ,file ('*') ,file ('*') ,file ('*') ,file ('*') from json_report_ch.join(centrifuge_reports_ch).join(centrifuge_assembly_reports_ch).join(quast_results).join(cov_json_ch).join(prokka_out_ch.groupTuple())
+
+//  set sampleId, file ('*') from json_report_ch.collect().ifEmpty([])
+//  set sampleId ,file ('*') from centrifuge_reports_ch.collect().ifEmpty([])
+//  set sampleId ,file ('*') from centrifuge_assembly_reports_ch.collect().ifEmpty([])
+//  set sampleId ,file ('*') from quast_results.collect().ifEmpty([])
+//  set sampleId, file ('*') from cov_json_ch.collect().ifEmpty([])
+//  tuple set s1, file ('*'),set s2, file ('*'),set s3, file ('*'),set s4, file ('*'),set s5, file ('*'),set s6, file ('*'),set s7, file ('*'), set s8, file ('*'), set s9, file('*') from prokka_out_ch.collect().ifEmpty([])
+//  tuple file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file ('*'), file('*') from prokka_out_ch.collect().ifEmpty([])
+
+  output:
+  file "multiqc_report.html" into multiqc_report
+  file "multiqc_data"
+
+  script:
+  """
+  #Maybe I could change names of file here for a cleaner multiQC output
+  multiqc . --cl_config prokka_fn_snames:True
+  """
+}
+}
+
+
 
 workflow.onComplete {
 	  RED='\033[0;31m'
