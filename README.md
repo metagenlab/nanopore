@@ -9,7 +9,7 @@ The pipeline expects the folowing inputs :
 - summary   : a basecalling summary file from guppy (optional, absolute path)
 - reference : a reference genome (optional)
 
-These information have to be gather in a csv format, with the following header (in any order):
+These information have to be gather in a csv formated file, with the following header (in any order):
 `sampleId,fastq,summary,reference`
 
 A complete run looks like the following :
@@ -20,3 +20,4 @@ But you can also search for information in folders : centrifuge, resistance, cov
 
 
 Because some databases are only found in my working directory I would suggest to run it from there.
+(I think the pipeline currently only works with a reference genome)
