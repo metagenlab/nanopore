@@ -4,7 +4,7 @@ Clinical workflow for real time analysis of ONT sequencing data. (still work in 
 This includes species identification (using centrifuge) and resistance gene identification (using RGI-CARD).
 
 The pipeline expects the folowing inputs :
-- fastq     : a *single* ONT fastq file. (absolute path)
+- fastq     : a *single* ONT fastq file. (absolute path, cat all passed reads is a way to create such a file)
 - sampleID  : a unique name for your sample
 - summary   : a basecalling summary file from guppy (optional, absolute path)
 - reference : a reference genome (optional)
