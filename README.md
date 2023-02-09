@@ -23,7 +23,14 @@ A complete run looks like the following :
 Currently, the whole pipeline needs to be run to create a multiQC report (found in the folder multiqc).
 But you can also search for tool specific outputs in folders : centrifuge, resistance, coverage or checkM.
 
+### Parameters to modify
 
+A few parameters have to be modified to fit your databases, the simplest way is to update the nextflow.config file :
+- human_genome  (provide an assembly of the human genome)
+- pepper_db     (location of pepper's database)
+- homopolish_db (location of the homopolish's mash_sketches)
+- cendb         (location of the centrifuge database)
+- card          (location of the CARD database)
 
 ## Polishing tools evaluation
 
