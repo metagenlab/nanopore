@@ -67,8 +67,8 @@ def helpMessage() {
 			(currently used for comparing gene numbers)
 
 
-Could be useful if someone wants to implement these options (originally made by Farid)
-			
+Unused options that might be useful if someone implements it (originally from Farid)			
+
     ========================================================================================
     File batching
     ========================================================================================
