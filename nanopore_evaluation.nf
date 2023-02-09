@@ -3,31 +3,12 @@
 def helpMessage() {
     log.info"""
     Usage:
-    nextflow run metagenlab/nanopore [Profiles] [Options]
-    
-    Profiles:
-        local               local execution
-        slurm               SLURM execution with either Singularity or Docker
+    nextflow run metagenlab/nanopore [Options]
     
     Options:
         --outdir        	  Output directory for pipeline analysis results
         --input             Input directory of files to process
 
-    ========================================================================================
-    File batching
-    ========================================================================================
-    Options:
-        --watch             Set to true to watch a directory for files
-        --batch             Number of files to process in batch (default=5000)
-        --wait              Time in seconds to wait for fast5/q files (default=1)
-
-    ========================================================================================
-    Basecalling
-    ========================================================================================
-    Options:
-        --basecall       	  Use guppy cpu/gpu basecalling (default=cpu)
-        --model             Basecalling model for guppy (default=dna_r9.4.1_450bps_fast.cfg)
-        --runid             fastq.gz name after basecalling
 
     ========================================================================================
     QC
@@ -84,6 +65,26 @@ def helpMessage() {
     Options:
         --annotation	Allow prokka annotation on every assembly/polished genome
 			(currently used for comparing gene numbers)
+
+
+Could be useful if someone wants to implement these options (originally made by Farid)
+			
+    ========================================================================================
+    File batching
+    ========================================================================================
+    Options:
+        --watch             Set to true to watch a directory for files
+        --batch             Number of files to process in batch (default=5000)
+        --wait              Time in seconds to wait for fast5/q files (default=1)
+
+    ========================================================================================
+    Basecalling
+    ========================================================================================
+    Options:
+        --basecall       	  Use guppy cpu/gpu basecalling (default=cpu)
+        --model             Basecalling model for guppy (default=dna_r9.4.1_450bps_fast.cfg)
+        --runid             fastq.gz name after basecalling
+	
     Author:
     Farid Chaabane (faridchaabn@gmail.com)
     Alexandre Jann (alexandre.jann@unil.ch) 
