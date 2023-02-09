@@ -1,6 +1,7 @@
 # Nanopore nextflow pipeline
 
-Clinical pipeline for real time analysis of ONT sequencing data.
+Clinical pipeline for real time analysis of ONT sequencing data.  
+
 
 This pipeline includes species identification (using Centrifuge) and resistance gene identification (using RGI-CARD).
 
