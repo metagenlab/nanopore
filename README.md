@@ -27,7 +27,7 @@ But you can also search for tool specific outputs in folders : centrifuge, resis
 
 A few parameters have to be modified to fit your databases, the simplest way is to update the nextflow.config file :
 - human_genome  (provide an assembly of the human genome)
-- pepper_db     (location of pepper's database)
+- pepper_db     (location of pepper's database, only needed for the evaluation pipeline)
 - homopolish_db (location of the homopolish's mash_sketches)
 - cendb         (location of the centrifuge database)
 - card          (location of the CARD database)
