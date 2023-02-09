@@ -15,7 +15,7 @@ an optionnal input can be provided to try to use reads for which demultiplexing 
 - unclassified : a *single* ONT fastq file containing reads for which demultipexing failed 
 
 These information have to be gather in a csv formated file, with the following header (in any order):
-`sampleId,fastq,summary,reference(,unclassified)`
+`sampleId,fastq,summary(,unclassified)`
 
 A complete run looks like the following :
 `nextflow run nanopore_main.nf --samples <your_input_file.csv> --outdir <output_folder_name> --summary --tax`
