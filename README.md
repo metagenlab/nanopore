@@ -17,7 +17,7 @@ These information have to be gather in a csv formated file, with the following h
 `sampleId,fastq,summary,reference(,unclassified)
 
 A complete run looks like the following :
-`nextflow run nanopore_main.nf --samples <your_input_file.csv> --outdir <output_folder_name> --summary --coverage --tax --res --annotation`
+`nextflow run nanopore_main.nf --samples <your_input_file.csv> --outdir <output_folder_name> --summary --tax`
 
 Currently, the whole pipeline needs to be run to create a multiQC report (found in the folder multiqc).
 But you can also search for tool specific outputs in folders : centrifuge, resistance, coverage or checkM.
