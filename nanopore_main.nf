@@ -63,7 +63,6 @@ def helpMessage() {
 			
 			
 			
-			
 Unused options that might be useful if someone implements it (originally from Farid)			
 
     ========================================================================================
@@ -80,11 +79,7 @@ Unused options that might be useful if someone implements it (originally from Fa
     Options:
         --basecall       	  Use guppy cpu/gpu basecalling (default=cpu)
         --model             Basecalling model for guppy (default=dna_r9.4.1_450bps_fast.cfg)
-        --runid             fastq.gz name after basecalling
-
-
-			
-			
+        --runid             fastq.gz name after basecalling	
 			
 			
     Author:
