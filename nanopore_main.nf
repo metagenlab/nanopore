@@ -27,7 +27,7 @@ def helpMessage() {
     Options:
         --assembly      Assembler of choice (default=flye)
 	--givenAssembly	notify if the assembly is already provided 
-			(temporary: to save time during testing)
+			(to save time during testing)
     
     ========================================================================================
     Mapping to Human
@@ -157,7 +157,7 @@ if (params.hybrid) {
   illumina_fastq_ch=Channel.empty()
 }
 
-// DEBUG to avoid assembly during testing
+// to avoid assembly during testing
 if (params.givenAssembly) {
   given_assembly_ch=Channel.fromPath("$params.samples")
   .splitCsv(header:true)
