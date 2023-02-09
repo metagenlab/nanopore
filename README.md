@@ -10,6 +10,7 @@ The following inputs are expected :
 - fastq     : the folder in which sequencing data were gathered (absolute path, it should end by "/barcodeXX", e.g. XX = 01)
 - sampleID  : a unique name for your sample
 - summary   : a basecalling summary file from guppy (absolute path)  
+
 an optionnal input can be provided to try to use reads for which demultiplexing failed with `--keep_unclassified`.
 - unclassified : a *single* ONT fastq file containing reads for which demultipexing failed 
 
